@@ -21,7 +21,7 @@ const PASTA_DRIVE_URL = "https://drive.google.com/drive/folders/1IcB1uXNjsVBijbH
  * Sem ela o site roda em modo demonstração com dados de exemplo.
  * ★ Cole sua chave entre as aspas abaixo:
  */
-const GOOGLE_API_KEY = ""; // ← COLE SUA GOOGLE API KEY AQUI
+const GOOGLE_API_KEY = "AIzaSyB2er6hl-KDl2VrAhMkTcEtocMKME6UlfA"; // ← COLE SUA GOOGLE API KEY AQUI
 
 /**
  * Intervalo de atualização automática (ms). Padrão: 5 minutos.
