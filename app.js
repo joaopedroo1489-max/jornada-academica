@@ -33,7 +33,7 @@ const AUTO_REFRESH_INTERVAL_MS = 300_000;
    ══════════════════════════════════════════════════════ */
 const STATE = {
   semestres:   [],   // [{ id, nome, cadeiras: [{ id, nome, arquivos:[] }] }]
-  newsletters: [],   // [{ cadeiraId, cadeiraNome, semestreNome, conteudo, geradaEm }]
+  newsletters: {},   // { cadeiraId: [{ cadeiraId, cadeiraNome, semestreNome, conteudo, geradaEm }, ...] }
   loadedAt:    null,
 };
 
@@ -433,8 +433,10 @@ function gerarNewsletterLocal(cadeira, semestreNome) {
    RENDERIZAÇÃO DE NEWSLETTER
    ══════════════════════════════════════════════════════ */
 
-function renderNewsletterHTML(nl, cadeira, semestreNome) {
+function renderNewsletterHTML(nl, cadeira, semestreNome, numEdicao, totalEdicoes) {
   const contabil = isContabil(cadeira.nome);
+  numEdicao    = numEdicao    || 1;
+  totalEdicoes = totalEdicoes || 1;
 
   const topicosHTML = (nl.topicos_principais || []).map(t => `
     <li>
@@ -466,15 +468,31 @@ function renderNewsletterHTML(nl, cadeira, semestreNome) {
   return `
   <div class="newsletter-wrap">
     <div class="nl-masthead">
-      <div class="nl-edition">NEWSLETTER ACADÊMICA • ${contabil ? "CONTÁBIL / CÁLCULO ★" : "ACADÊMICO"}</div>
+      <div class="nl-edition">NEWSLETTER ACADÊMICA • ${contabil ? "CONTÁBIL / CÁLCULO ★" : "ACADÊMICO"} • EDIÇÃO ${numEdicao} DE ${totalEdicoes}</div>
       <div class="nl-title">${cadeira.nome}</div>
       <div class="nl-meta-row">
-        <div class="nl-meta-item">📅 <strong>${formatDate(new Date())}</strong></div>
+        <div class="nl-meta-item">📅 <strong>${formatDate(new Date(STATE.newsletters[cadeira.id]?.[numEdicao-1]?.geradaEm || Date.now()))}</strong></div>
         <div class="nl-meta-item">📚 <strong>${semestreNome}</strong></div>
         <div class="nl-meta-item">⏱ <strong>${nl.carga_estimada_horas || "—"}h</strong> estimadas</div>
         <div class="nl-meta-item">📊 <strong>${nl.nivel_complexidade || "—"}</strong></div>
       </div>
     </div>
+
+    <!-- Navegação entre edições -->
+    ${totalEdicoes > 1 ? `
+    <div style="display:flex;align-items:center;justify-content:space-between;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-md);padding:12px 20px;margin-bottom:20px;gap:12px">
+      <button onclick="verNewsletterHistorico('${cadeira.id}',${totalEdicoes - numEdicao + 1 - 1},'${semestreNome}')"
+              style="background:none;border:none;color:${numEdicao > 1 ? "var(--accent)" : "var(--text-ter)"};font-size:13px;cursor:${numEdicao > 1 ? "pointer" : "default"};padding:4px 8px">
+        ← Anterior
+      </button>
+      <span style="font-size:12px;color:var(--text-ter);font-family:var(--font-mono)">
+        Edição ${numEdicao} / ${totalEdicoes}
+      </span>
+      <button onclick="verNewsletterHistorico('${cadeira.id}',${totalEdicoes - numEdicao - 1},'${semestreNome}')"
+              style="background:none;border:none;color:${numEdicao < totalEdicoes ? "var(--accent)" : "var(--text-ter)"};font-size:13px;cursor:${numEdicao < totalEdicoes ? "pointer" : "default"};padding:4px 8px">
+        Próxima →
+      </button>
+    </div>` : ""}
 
     <div class="nl-section">
       <div class="nl-section-label">RESUMO EXECUTIVO</div>
@@ -573,7 +591,7 @@ function navigateTo(page, params = {}) {
   if (navBtn) navBtn.classList.add("active");
 
   if (page === "semestre" && params.semestreId) renderSemestrePage(params.semestreId);
-  if (page === "newsletter" && params.cadeiraId) renderNewsletterPage(params.cadeiraId, params.semestreNome || "");
+  if (page === "newsletter" && params.cadeiraId) renderNewsletterPage(params.cadeiraId, params.semestreNome || "", params.nlIdx);
 
   document.getElementById("main-content").scrollTo({ top: 0, behavior: "smooth" });
 }
@@ -587,13 +605,17 @@ function renderHome() {
   const totalArquivos  = STATE.semestres.reduce((s, sem) =>
     s + sem.cadeiras.reduce((c, cad) => c + cad.arquivos.length, 0), 0);
 
-  document.getElementById("stat-semestres").textContent  = STATE.semestres.length;
-  document.getElementById("stat-cadeiras").textContent   = totalCadeiras;
-  document.getElementById("stat-arquivos").textContent   = totalArquivos;
-  document.getElementById("stat-newsletters").textContent = STATE.newsletters.length;
+  // Todas as newsletters em lista plana, ordenadas da mais recente
+  const todasNLs = Object.values(STATE.newsletters).flat()
+    .sort((a, b) => b.geradaEm - a.geradaEm);
 
-  // Últimas newsletters
-  const recentes = [...STATE.newsletters].reverse().slice(0, 3);
+  document.getElementById("stat-semestres").textContent   = STATE.semestres.length;
+  document.getElementById("stat-cadeiras").textContent    = totalCadeiras;
+  document.getElementById("stat-arquivos").textContent    = totalArquivos;
+  document.getElementById("stat-newsletters").textContent = todasNLs.length;
+
+  // Últimas newsletters (3 mais recentes)
+  const recentes = todasNLs.slice(0, 3);
   const homeGrid = document.getElementById("home-newsletters-grid");
   homeGrid.innerHTML = recentes.length
     ? recentes.map(nl => buildNLCard(nl)).join("")
@@ -646,8 +668,23 @@ function renderSemestrePage(semestreId) {
     sem.nome.replace(/(\d+[ºo°]?)/, "<em>$1</em>");
 
   document.getElementById("cadeiras-list").innerHTML = sem.cadeiras.map(cad => {
-    const nlOk = STATE.newsletters.find(n => n.cadeiraId === cad.id);
-    const contabil = isContabil(cad.nome);
+    // Lista de newsletters desta cadeira (mais recente primeiro)
+    const nlsCadeira = (STATE.newsletters[cad.id] || []).slice().reverse();
+    const temNL      = nlsCadeira.length > 0;
+    const ultimaNL   = nlsCadeira[0] || null;
+    const contabil   = isContabil(cad.nome);
+
+    // Histórico de newsletters geradas (badges clicáveis)
+    const historicoHTML = nlsCadeira.map((nl, idx) => `
+      <div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border)">
+        <span style="font-size:11px;font-family:var(--font-mono);color:var(--text-ter);min-width:20px">#${nlsCadeira.length - idx}</span>
+        <span style="font-size:13px;color:var(--text-sec);flex:1">Gerada em ${formatDate(new Date(nl.geradaEm))}</span>
+        <button onclick="verNewsletterHistorico('${cad.id}',${idx},'${sem.nome}')"
+                style="background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:4px 12px;font-size:12px;color:var(--text-sec);cursor:pointer;white-space:nowrap">
+          Ver →
+        </button>
+      </div>`).join("") || `<p style="font-size:13px;color:var(--text-ter);padding:8px 0">Nenhuma newsletter gerada ainda.</p>`;
+
     return `
       <div class="cadeira-row" id="cad-row-${cad.id}">
         <div class="cadeira-header" onclick="toggleCadeira('${cad.id}')">
@@ -657,21 +694,49 @@ function renderSemestrePage(semestreId) {
           </div>
           <div style="display:flex;align-items:center;gap:12px">
             <span class="cadeira-files">${cad.arquivos.length} arquivo(s)</span>
+            ${temNL ? `<span style="background:var(--accent-light);color:var(--accent);font-size:10px;font-weight:600;padding:2px 8px;border-radius:100px;letter-spacing:.05em">${nlsCadeira.length} NL</span>` : ""}
             <span class="cadeira-toggle">⌄</span>
           </div>
         </div>
+
         <div class="cadeira-body">
-          <div class="files-chips">
-            ${cad.arquivos.map(f => `<span class="file-chip">${fileIcon(f.name)} ${f.name}</span>`).join("")
-              || `<span style="color:var(--text-ter);font-size:13px">Nenhum arquivo detectado.</span>`}
+
+          <!-- Arquivos detectados -->
+          <div style="margin-bottom:14px">
+            <div style="font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-ter);margin-bottom:8px">ARQUIVOS</div>
+            <div class="files-chips">
+              ${cad.arquivos.map(f => `<span class="file-chip">${fileIcon(f.name)} ${f.name}</span>`).join("")
+                || `<span style="color:var(--text-ter);font-size:13px">Nenhum arquivo detectado.</span>`}
+            </div>
           </div>
-          <div class="cadeira-preview" style="margin-top:12px;font-size:13.5px;color:var(--text-sec)">
-            ${nlOk ? `<em>✓ Newsletter gerada em ${formatDate(new Date(nlOk.geradaEm))}</em>` : "Newsletter ainda não gerada para esta cadeira."}
+
+          <!-- Botões de ação -->
+          <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:18px">
+            <!-- Botão principal: gerar nova newsletter (NÃO apaga as anteriores) -->
+            <button class="btn-open-nl"
+                    onclick="gerarNovaNewsletter('${cad.id}','${sem.nome}',this)">
+              ◈ Nova Newsletter →
+            </button>
+
+            <!-- Ver a mais recente (só aparece se já existe alguma) -->
+            ${temNL ? `
+            <button class="btn-open-nl"
+                    style="background:var(--surface);color:var(--accent);border:1.5px solid var(--accent)"
+                    onclick="verNewsletterHistorico('${cad.id}',0,'${sem.nome}')">
+              ↗ Ver Última (${formatDate(new Date(ultimaNL.geradaEm))})
+            </button>` : ""}
           </div>
-          <button class="btn-open-nl"
-                  onclick="navigateTo('newsletter',{cadeiraId:'${cad.id}',semestreNome:'${sem.nome}'})">
-            ${nlOk ? "↻ Ver Newsletter" : "◈ Gerar Newsletter"} →
-          </button>
+
+          <!-- Histórico de newsletters desta cadeira -->
+          <div style="margin-top:4px">
+            <div style="font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-ter);margin-bottom:8px">
+              HISTÓRICO DE NEWSLETTERS (${nlsCadeira.length})
+            </div>
+            <div id="historico-${cad.id}">
+              ${historicoHTML}
+            </div>
+          </div>
+
         </div>
       </div>`;
   }).join("");
@@ -685,11 +750,68 @@ function toggleCadeira(id) {
    PÁGINA DE NEWSLETTER
    ══════════════════════════════════════════════════════ */
 
-function renderNewsletterPage(cadeiraId, semestreNome) {
+/**
+ * Gera UMA NOVA newsletter para a cadeira e adiciona ao histórico.
+ * NÃO apaga as newsletters anteriores.
+ * Chamado pelo botão "Nova Newsletter" dentro da aba da cadeira.
+ */
+function gerarNovaNewsletter(cadeiraId, semestreNome, btnEl) {
+  const cadeira = STATE.semestres
+    .flatMap(s => s.cadeiras.map(c => ({ ...c, semestreNome: s.nome })))
+    .find(c => c.id === cadeiraId);
+  if (!cadeira) return;
+
+  // Feedback visual no botão
+  if (btnEl) { btnEl.disabled = true; btnEl.innerHTML = "⏳ Gerando…"; }
+
+  setTimeout(() => {
+    try {
+      const semNome = semestreNome || cadeira.semestreNome;
+      const nlData  = gerarNewsletterLocal(cadeira, semNome);
+      const entrada = { cadeiraId, cadeiraNome: cadeira.nome, semestreNome: semNome, conteudo: nlData, geradaEm: Date.now() };
+
+      // Adiciona ao array desta cadeira (preserva as anteriores)
+      if (!STATE.newsletters[cadeiraId]) STATE.newsletters[cadeiraId] = [];
+      STATE.newsletters[cadeiraId].push(entrada);
+
+      saveNewslettersLocal();
+
+      // Restaura botão
+      if (btnEl) { btnEl.disabled = false; btnEl.innerHTML = "◈ Nova Newsletter →"; }
+
+      // Navega para a newsletter recém-gerada (última do array)
+      const idx = STATE.newsletters[cadeiraId].length - 1;
+      renderNewsletterPage(cadeiraId, semNome, idx);
+      navigateTo("newsletter", { cadeiraId, semestreNome: semNome, nlIdx: idx });
+
+      renderHome();
+    } catch (err) {
+      if (btnEl) { btnEl.disabled = false; btnEl.innerHTML = "◈ Nova Newsletter →"; }
+      alert("Erro ao gerar newsletter: " + err.message);
+    }
+  }, 400);
+}
+
+/**
+ * Abre uma newsletter do histórico pelo índice (0 = mais recente após reverse).
+ * Usado pelo botão "Ver →" no histórico da aba.
+ */
+function verNewsletterHistorico(cadeiraId, idxReverso, semestreNome) {
+  const lista = STATE.newsletters[cadeiraId] || [];
+  // idxReverso 0 = última gerada (lista.length - 1 no array original)
+  const idxReal = lista.length - 1 - idxReverso;
+  renderNewsletterPage(cadeiraId, semestreNome, idxReal);
+  navigateTo("newsletter", { cadeiraId, semestreNome, nlIdx: idxReal });
+}
+
+/**
+ * Renderiza a página de newsletter.
+ * nlIdx: índice no array STATE.newsletters[cadeiraId] (padrão: última)
+ */
+function renderNewsletterPage(cadeiraId, semestreNome, nlIdx) {
   const container = document.getElementById("newsletter-content");
   hideError();
 
-  // Encontra cadeira em qualquer semestre
   const cadeira = STATE.semestres
     .flatMap(s => s.cadeiras.map(c => ({ ...c, semestreNome: s.nome })))
     .find(c => c.id === cadeiraId);
@@ -699,51 +821,37 @@ function renderNewsletterPage(cadeiraId, semestreNome) {
     return;
   }
 
-  const semNome = semestreNome || cadeira.semestreNome;
+  const semNome  = semestreNome || cadeira.semestreNome;
+  const lista    = STATE.newsletters[cadeiraId] || [];
+  const idx      = nlIdx !== undefined ? nlIdx : lista.length - 1;
+  const existente = lista[idx];
 
-  // Newsletter já gerada?
-  const existente = STATE.newsletters.find(n => n.cadeiraId === cadeiraId);
+  // Se existe newsletter no índice solicitado, exibe ela
   if (existente) {
-    container.innerHTML = renderNewsletterHTML(existente.conteudo, cadeira, semNome);
-    addRegenerateButton(container, cadeiraId, semNome);
+    const total    = lista.length;
+    const numExib  = idx + 1; // 1-based para o usuário
+    container.innerHTML = renderNewsletterHTML(existente.conteudo, cadeira, semNome, numExib, total);
     return;
   }
 
-  // Gera localmente (instantâneo, sem chamada externa)
+  // Nenhuma newsletter ainda — mostra loading e gera a primeira
   container.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;min-height:30vh">
     <div class="loader-ring"></div></div>`;
 
   setTimeout(() => {
     try {
-      const nlData = gerarNewsletterLocal(cadeira, semNome);
-      STATE.newsletters.push({
-        cadeiraId,
-        cadeiraNome: cadeira.nome,
-        semestreNome: semNome,
-        conteudo: nlData,
-        geradaEm: Date.now(),
-      });
+      const nlData  = gerarNewsletterLocal(cadeira, semNome);
+      const entrada = { cadeiraId, cadeiraNome: cadeira.nome, semestreNome: semNome, conteudo: nlData, geradaEm: Date.now() };
+      if (!STATE.newsletters[cadeiraId]) STATE.newsletters[cadeiraId] = [];
+      STATE.newsletters[cadeiraId].push(entrada);
       saveNewslettersLocal();
-      container.innerHTML = renderNewsletterHTML(nlData, cadeira, semNome);
-      addRegenerateButton(container, cadeiraId, semNome);
+      const novoIdx = STATE.newsletters[cadeiraId].length - 1;
+      container.innerHTML = renderNewsletterHTML(nlData, cadeira, semNome, novoIdx + 1, novoIdx + 1);
       renderHome();
     } catch (err) {
       container.innerHTML = `<div class="error-banner"><span>⚠</span><span>Erro: ${err.message}</span></div>`;
     }
-  }, 400); // pequeno delay para mostrar o loading
-}
-
-function addRegenerateButton(container, cadeiraId, semestreNome) {
-  const btn = document.createElement("button");
-  btn.className = "btn-refresh";
-  btn.style.cssText = "margin:20px 0 40px;width:auto;padding:10px 24px;";
-  btn.innerHTML = "↻ Regenerar Newsletter";
-  btn.onclick = () => {
-    STATE.newsletters = STATE.newsletters.filter(n => n.cadeiraId !== cadeiraId);
-    saveNewslettersLocal();
-    renderNewsletterPage(cadeiraId, semestreNome);
-  };
-  container.appendChild(btn);
+  }, 400);
 }
 
 /* ══════════════════════════════════════════════════════
@@ -751,14 +859,24 @@ function addRegenerateButton(container, cadeiraId, semestreNome) {
    ══════════════════════════════════════════════════════ */
 
 function renderAllNewsletters() {
-  const grid   = document.getElementById("all-newsletters-grid");
-  const busca  = normalize(document.getElementById("nl-search").value);
-  const filSem = document.getElementById("nl-filter-semestre").value;
+  const grid          = document.getElementById("all-newsletters-grid");
+  const busca         = normalize(document.getElementById("nl-search").value);
+  const filSem        = document.getElementById("nl-filter-semestre").value;
   const semNomeFilter = filSem ? STATE.semestres.find(s => s.id === filSem)?.nome : "";
 
-  let lista = STATE.newsletters;
-  if (busca)      lista = lista.filter(nl => normalize(nl.cadeiraNome).includes(busca) || normalize(nl.semestreNome).includes(busca));
+  // Lista plana: apenas a ÚLTIMA newsletter de cada cadeira para o card
+  // (representa a cadeira; o usuário acessa o histórico dentro da aba)
+  let lista = Object.entries(STATE.newsletters)
+    .map(([cadeiraId, arr]) => {
+      const ultima = arr[arr.length - 1];
+      return { ...ultima, totalEdicoes: arr.length };
+    });
+
+  if (busca)         lista = lista.filter(nl => normalize(nl.cadeiraNome).includes(busca) || normalize(nl.semestreNome).includes(busca));
   if (semNomeFilter) lista = lista.filter(nl => nl.semestreNome === semNomeFilter);
+
+  // Ordena pela mais recente
+  lista.sort((a, b) => b.geradaEm - a.geradaEm);
 
   grid.innerHTML = lista.length
     ? lista.map(nl => buildNLCard(nl)).join("")
@@ -770,14 +888,18 @@ function renderAllNewsletters() {
 function filterNewsletters() { renderAllNewsletters(); }
 
 function buildNLCard(nl) {
-  const contabil = isContabil(nl.cadeiraNome);
-  const resumo   = nl.conteudo?.resumo_executivo || "";
-  const nivel    = nl.conteudo?.nivel_complexidade || "";
+  const contabil     = isContabil(nl.cadeiraNome);
+  const resumo       = nl.conteudo?.resumo_executivo || "";
+  const nivel        = nl.conteudo?.nivel_complexidade || "";
+  const totalEdicoes = nl.totalEdicoes || 1;
   return `
     <div class="nl-card ${contabil ? "contabil" : ""}"
          onclick="navigateTo('newsletter',{cadeiraId:'${nl.cadeiraId}',semestreNome:'${nl.semestreNome}'})">
       <span class="card-tag">${contabil ? "★ Contábil" : "◈ Acadêmico"}</span>
-      <div class="card-semestre-badge">${nl.semestreNome}</div>
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div class="card-semestre-badge">${nl.semestreNome}</div>
+        ${totalEdicoes > 1 ? `<span style="font-size:10px;background:var(--surface-2);border:1px solid var(--border);border-radius:100px;padding:2px 8px;color:var(--text-ter);font-family:var(--font-mono)">${totalEdicoes} edições</span>` : ""}
+      </div>
       <div class="card-title">${nl.cadeiraNome}</div>
       <div class="card-excerpt">${resumo}</div>
       <div class="card-footer">
@@ -792,15 +914,25 @@ function buildNLCard(nl) {
    ══════════════════════════════════════════════════════ */
 
 function saveNewslettersLocal() {
-  try { localStorage.setItem("jornada_newsletters_v2", JSON.stringify(STATE.newsletters)); }
+  try { localStorage.setItem("jornada_newsletters_v3", JSON.stringify(STATE.newsletters)); }
   catch { /* quota */ }
 }
 
 function loadNewslettersLocal() {
   try {
-    const s = localStorage.getItem("jornada_newsletters_v2");
-    if (s) STATE.newsletters = JSON.parse(s);
-  } catch { STATE.newsletters = []; }
+    const s = localStorage.getItem("jornada_newsletters_v3");
+    if (s) {
+      const parsed = JSON.parse(s);
+      // Suporte ao formato antigo (array) — migra para objeto
+      STATE.newsletters = Array.isArray(parsed)
+        ? parsed.reduce((obj, nl) => {
+            if (!obj[nl.cadeiraId]) obj[nl.cadeiraId] = [];
+            obj[nl.cadeiraId].push(nl);
+            return obj;
+          }, {})
+        : parsed;
+    }
+  } catch { STATE.newsletters = {}; }
 }
 
 /* ══════════════════════════════════════════════════════
